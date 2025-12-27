@@ -217,6 +217,25 @@ def generate_signal(df, pair_name):
 
 # GitHub par update kar ke redeploy kar do Render par
 
+# ... baaki sab code same rahega (imports se auto_alert tak)
+
+# Auto Alert
+async def auto_alert(context: ContextTypes.DEFAULT_TYPE):
+    for pair_name in PAIRS:
+        base, quote = PAIRS[pair_name]
+        df = get_historical_data(base, quote)
+        if df.empty:
+            continue
+        text, strength = generate_signal(df, pair_name)
+        if abs(strength) >= 3:
+            chart = generate_chart(df, pair_name)
+            caption = f"🔔 **STRONG ALERT**\n\n{text}"
+            if chart:
+                await context.bot.send_photo(YOUR_CHAT_ID, chart, caption=caption, parse_mode='Markdown')
+            else:
+                await context.bot.send_message(YOUR_CHAT_ID, text=caption, parse_mode='Markdown')
+
+# ===== MAIN - YEH SABSE LAST MEIN HONA CHAHIYE =====
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
@@ -226,7 +245,7 @@ async def main():
     
     app.job_queue.run_repeating(auto_alert, interval=1800, first=30)
     
-    print("Bot with Support/Resistance Running!")
+    print("Forex Bot Fully Running on Render - 24x7 Online!")
     await app.run_polling()
 
 if __name__ == '__main__':
