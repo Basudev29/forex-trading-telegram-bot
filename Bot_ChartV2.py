@@ -245,7 +245,7 @@ async def main():
     
     app.job_queue.run_repeating(auto_alert, interval=1800, first=30)
     
-    print("Forex Bot Fully Running on Render - 24x7 Online!")
+    print("Forex Bot Fully Running - No Errors!")
     await app.run_polling()
 
 if __name__ == '__main__':
