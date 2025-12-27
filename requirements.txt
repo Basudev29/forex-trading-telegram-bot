@@ -4,3 +4,4 @@ pandas
 pandas_ta
 matplotlib
 nest_asyncio
+scipy
