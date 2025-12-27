@@ -1,0 +1,6 @@
+python-telegram-bot==22.5
+requests
+pandas
+pandas_ta
+matplotlib
+nest_asyncio
