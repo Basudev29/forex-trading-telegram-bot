@@ -6,7 +6,6 @@ import nest_asyncio
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import io
-import numpy as np  # For peak detection
 
 nest_asyncio.apply()
 
@@ -22,7 +21,7 @@ user_balance = 10000.0
 max_risk_percent = 1.0
 reward_risk_ratio = 2
 
-# Pairs
+# Major Pairs
 PAIRS = {
     'EUR/USD': ('EUR', 'USD'),
     'GBP/USD': ('GBP', 'USD'),
@@ -33,7 +32,7 @@ PAIRS = {
     'USD/CHF': ('USD', 'CHF')
 }
 
-# API Functions (frankfurter.app)
+# ===== API FUNCTIONS (frankfurter.app) =====
 def get_live_rate(base_curr, quote_curr):
     url = f"https://api.frankfurter.app/latest?from={base_curr}&to={quote_curr}"
     try:
@@ -72,40 +71,16 @@ def get_historical_data(base_curr, quote_curr, days=365):
         df['low'] = df['close'].rolling(window=5).min()
         df = df.dropna().reset_index(drop=True)
         return df
-    except:
+    except Exception as e:
+        print("Historical Error:", e)
         return pd.DataFrame()
 
-# Support & Resistance Detection
-def find_support_resistance(df, window=20, min_touches=2):
-    if len(df) < window * 2:
-        return [], []
-    
-    highs = df['high'][-window*3:]
-    lows = df['low'][-window*3:]
-    
-    # Find peaks (resistance)
-    from scipy.signal import find_peaks
-    peaks, _ = find_peaks(highs, distance=5, prominence=(highs.max() - highs.min())*0.01)
-    resistance_levels = highs.iloc[peaks].value_counts()
-    resistance = resistance_levels[resistance_levels >= min_touches].index.tolist()
-    
-    # Find troughs (support)
-    troughs, _ = find_peaks(-lows.values, distance=5, prominence=(lows.max() - lows.min())*0.01)
-    support_levels = lows.iloc[troughs].value_counts()
-    support = support_levels[support_levels >= min_touches].index.tolist()
-    
-    # Take top 3 strongest
-    resistance = sorted(resistance, reverse=True)[:3]
-    support = sorted(support)[:3]
-    
-    return support, resistance
-
-# Chart with S/R
+# ===== CHART GENERATION =====
 def generate_chart(df, pair_name):
     if df.empty or len(df) < 20:
         return None
     
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(12, 7))
     plt.style.use('dark_background')
     
     recent = df[-60:]
@@ -116,14 +91,7 @@ def generate_chart(df, pair_name):
     plt.plot(recent['date'], sma_20[-60:], label='SMA 20', color='yellow', alpha=0.8)
     plt.plot(recent['date'], sma_50[-60:], label='SMA 50', color='orange', alpha=0.8)
     
-    # Support & Resistance Lines
-    support, resistance = find_support_resistance(df)
-    for level in support:
-        plt.axhline(level, color='green', linestyle='--', alpha=0.7, label=f'Support {level:.5f}' if support.index(level) == 0 else "")
-    for level in resistance:
-        plt.axhline(level, color='red', linestyle='--', alpha=0.7, label=f'Resistance {level:.5f}' if resistance.index(level) == 0 else "")
-    
-    plt.title(f"{pair_name} - Last 60 Days with S/R", color='white', fontsize=16)
+    plt.title(f"{pair_name} - Last 60 Days", color='white', fontsize=16)
     plt.xlabel('Date', color='white')
     plt.ylabel('Price', color='white')
     plt.legend()
@@ -136,7 +104,7 @@ def generate_chart(df, pair_name):
     plt.close()
     return buf
 
-# Signal with S/R info
+# ===== SIGNAL GENERATION WITH RISK MANAGEMENT =====
 def generate_signal(df, pair_name):
     if df.empty or len(df) < 50:
         return "Not enough data 😕", 0
@@ -157,69 +125,134 @@ def generate_signal(df, pair_name):
         reasons.append("🔴 Death Cross")
         strength -= 3
     
-    # S/R Detection
-    support, resistance = find_support_resistance(df)
-    current_price = last['close']
-    sr_text = ""
-    if support and abs(current_price - max(support)) < last['atr']:
-        sr_text += f"\n🟢 Price near Support ({max(support):.5f}) - Bounce possible"
-        strength += 2
-    if resistance and abs(current_price - min(resistance)) < last['atr']:
-        sr_text += f"\n🔴 Price near Resistance ({min(resistance):.5f}) - Rejection possible"
-        strength -= 2
+    base, quote = PAIRS[pair_name]
+    live_rate = get_live_rate(base, quote)
+    if live_rate is None:
+        live_rate = get_live_rate(quote, base)
+        if live_rate is not None:
+            live_rate = 1 / live_rate if base != 'USD' else live_rate
     
-    live_rate = get_live_rate(*PAIRS[pair_name])
     live_str = f"{live_rate:.5f}" if live_rate else "N/A"
     
     atr = last['atr'] if pd.notna(last['atr']) else 0.001
     risk_amount = user_balance * (max_risk_percent / 100)
     position_size = risk_amount / (atr * 10000) if atr > 0 else 0.01
     
-    sl_str = tp_str = "N/A"
+    sl = tp = 0
     if strength > 0 and live_rate:
-        sl_str = f"{live_rate - atr:.5f}"
-        tp_str = f"{live_rate + (reward_risk_ratio * atr):.5f}"
+        sl = live_rate - atr
+        tp = live_rate + (reward_risk_ratio * atr)
     elif strength < 0 and live_rate:
-        sl_str = f"{live_rate + atr:.5f}"
-        tp_str = f"{live_rate - (reward_risk_ratio * atr):.5f}"
+        sl = live_rate + atr
+        tp = live_rate - (reward_risk_ratio * atr)
     
     risk_text = (
         f"\n\n**Risk Management**\n"
         f"• Balance: ${user_balance:,.0f}\n"
         f"• Risk %: {max_risk_percent}%\n"
         f"• Lots: {position_size:.2f}\n"
-        f"• Stop-Loss: {sl_str}\n"
-        f"• Take-Profit: {tp_str}\n"
+        f"• Stop-Loss: {sl:.5f if sl else 'N/A'}\n"
+        f"• Take-Profit: {tp:.5f if tp else 'N/A'}\n"
         f"• R:R = {reward_risk_ratio}:1"
     )
     
-    if strength >= 4:
-        signal = f"**STRONG BUY** 📈\n" + "\n".join(reasons) + sr_text + f"\n\nLive Rate: {live_str}" + risk_text
-    elif strength <= -4:
-        signal = f"**STRONG SELL** 📉\n" + "\n".join(reasons) + sr_text + f"\n\nLive Rate: {live_str}" + risk_text
+    if strength >= 3:
+        signal = f"**STRONG BUY** 📈\n" + "\n".join(reasons) + f"\n\nLive Rate: {live_str}" + risk_text
+    elif strength <= -3:
+        signal = f"**STRONG SELL** 📉\n" + "\n".join(reasons) + f"\n\nLive Rate: {live_str}" + risk_text
     else:
-        signal = f"**HOLD** ⚖️\nStrength: {strength}{sr_text}\nLive Rate: {live_str}\n\nWait for confirmation."
+        signal = f"**HOLD** ⚖️\nStrength: {strength}\nLive Rate: {live_str}\n\nNo strong signal - Wait."
     
     return signal, strength
 
-# Baaki handlers same rahenge (start, button_handler, auto_alert, main)
+# ===== COMMANDS =====
+async def set_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global user_balance, max_risk_percent
+    args = context.args
+    if len(args) == 2:
+        try:
+            user_balance = float(args[0])
+            max_risk_percent = float(args[1])
+            await update.message.reply_text(f"✅ Updated!\nBalance: ${user_balance:,.0f}\nRisk: {max_risk_percent}%")
+        except:
+            await update.message.reply_text("❌ Wrong format. Use: /setrisk 10000 1")
+    else:
+        await update.message.reply_text("Usage: /setrisk <balance> <risk_percent>")
 
-# Note: scipy.signal.find_peaks ke liye requirements.txt mein add karo: scipy
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("💱 Live Rates", callback_data="live_menu"),
+         InlineKeyboardButton("📊 Chart + Signal", callback_data="chart_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        '🤖 **Forex Trading 24X7 Bot**\n\n'
+        '• Live rates\n'
+        '• Charts & signals\n'
+        '• Risk management\n'
+        '• /setrisk to customize\n\n'
+        'Select option:',
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
 
-# requirements.txt update:
-# python-telegram-bot[job-queue]==22.5
-# requests
-# pandas
-# pandas_ta
-# matplotlib
-# nest_asyncio
-# scipy  # Yeh add karo for peak detection
+# ===== BUTTON HANDLER =====
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data.endswith("_menu"):
+        keyboard = []
+        for name in PAIRS.keys():
+            keyboard.append([InlineKeyboardButton(name, callback_data=f"{data[:-5]}_{name}")])
+        keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("🔍 Select Pair:", reply_markup=reply_markup)
+        return
+    
+    if data == "main":
+        keyboard = [
+            [InlineKeyboardButton("💱 Live Rates", callback_data="live_menu"),
+             InlineKeyboardButton("📊 Chart + Signal", callback_data="chart_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text('🤖 Main Menu', reply_markup=reply_markup)
+        return
+    
+    action = data.split("_")[0]
+    pair_name = data.split("_", 1)[1]
+    base, quote = PAIRS[pair_name]
+    
+    if action == "live":
+        rate = get_live_rate(base, quote)
+        if rate is None:
+            rate = get_live_rate(quote, base)
+            if rate is not None:
+                rate = 1 / rate if base != 'USD' else rate
+        rate_str = f"{rate:.5f}" if rate else "Error"
+        msg = f"**{pair_name} Live Rate**\n\n{rate_str}"
+        await query.edit_message_text(msg, parse_mode='Markdown')
+        return
+    
+    await query.edit_message_text("⏳ Generating chart & signal...")
+    df = get_historical_data(base, quote)
+    signal_text, _ = generate_signal(df, pair_name)
+    chart = generate_chart(df, pair_name)
+    
+    if chart:
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=chart,
+            caption=f"**{pair_name}**\n\n{signal_text}",
+            parse_mode='Markdown'
+        )
+        await query.delete_message()
+    else:
+        await query.edit_message_text(f"**{pair_name}**\n\n{signal_text}\n\nChart not available", parse_mode='Markdown')
 
-# GitHub par update kar ke redeploy kar do Render par
-
-# ... baaki sab code same rahega (imports se auto_alert tak)
-
-# Auto Alert
+# ===== AUTO ALERT =====
 async def auto_alert(context: ContextTypes.DEFAULT_TYPE):
     for pair_name in PAIRS:
         base, quote = PAIRS[pair_name]
@@ -235,7 +268,7 @@ async def auto_alert(context: ContextTypes.DEFAULT_TYPE):
             else:
                 await context.bot.send_message(YOUR_CHAT_ID, text=caption, parse_mode='Markdown')
 
-# ===== MAIN - YEH SABSE LAST MEIN HONA CHAHIYE =====
+# ===== MAIN - SABSE LAST MEIN =====
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
@@ -245,7 +278,7 @@ async def main():
     
     app.job_queue.run_repeating(auto_alert, interval=1800, first=30)
     
-    print("Forex Bot Fully Running - No Errors!")
+    print("Forex Bot Running - All Fixed & 24x7 Online!")
     await app.run_polling()
 
 if __name__ == '__main__':
