@@ -20,8 +20,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 # Render / .env me set karo:
 # TELEGRAM_TOKEN, YOUR_CHAT_ID
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-YOUR_CHAT_ID = int(os.getenv("YOUR_CHAT_ID"))
+TELEGRAM_TOKEN = "8377055187:AAGinbhefXUOk9vj2miXAcfI1B-1_Hgr-cw"
+YOUR_CHAT_ID = "YOUR_CHAT_ID", "966554382945"
 
 # Risk Settings (global default)
 user_balance = 10000.0
@@ -145,55 +145,49 @@ def generate_chart(df, pair_name):
 def generate_signal(df, pair_name):
     # Data check
     if df is None or df.empty or len(df) < 60:
-        return f"{pair_name}: Data not enough for analysis."
+        return f"{pair_name}: Data not enough for analysis.", "NONE"
 
-    # Last candle / basic values
     last = df.iloc[-1]
     close_price = last['close']
     open_price = last['open']
     high_price = last['high']
     low_price = last['low']
 
-    # Example indicators (agar tum indicators already calculate kar rahe ho,
-    # to unka code yahan use karo)
-    # Yahan ek simple moving average ka example:
+    # Simple MA20 example (agar already df['ma20'] hai to ye mat lagana)
     df['ma20'] = df['close'].rolling(window=20).mean()
     ma20 = df['ma20'].iloc[-1]
 
-    # Price action ke basis par dummy signal (tum apni logic rakh sakte ho)
-    signal_type = "HOLD"
+    # Signal type
+    strength = "HOLD"
     if close_price > ma20 and close_price > open_price:
-        signal_type = "STRONG BUY"
+        strength = "STRONG BUY"
     elif close_price < ma20 and close_price < open_price:
-        signal_type = "STRONG SELL"
+        strength = "STRONG SELL"
 
-    # SL / TP example (simple percentage logic, tum apni strategy use karo)
-    if signal_type == "STRONG BUY":
+    # SL / TP
+    sl_price = None
+    tp_price = None
+    if strength == "STRONG BUY":
         sl_price = low_price * 0.995
         tp_price = close_price * 1.010
-    elif signal_type == "STRONG SELL":
+    elif strength == "STRONG SELL":
         sl_price = high_price * 1.005
         tp_price = close_price * 0.990
-    else:
-        sl_price = None
-        tp_price = None
 
-    # Risk/Reward ratio example
-    if sl_price and tp_price:
+    # RR
+    rr_ratio = None
+    if sl_price is not None and tp_price is not None:
         risk = abs(close_price - sl_price)
         reward = abs(tp_price - close_price)
         rr_ratio = reward / risk if risk != 0 else 0
-    else:
-        rr_ratio = None
 
-    # ---------- Support / Resistance calculation ----------
-    recent = df[-60:]  # last 60 candles
+    # ----- Support / Resistance -----
+    recent = df[-60:]
     support = recent['low'].min()
     resistance = recent['high'].max()
 
-    # ---------- Text blocks ready ----------
     # Risk text
-    if sl_price and tp_price and rr_ratio is not None:
+    if sl_price is not None and tp_price is not None and rr_ratio is not None:
         risk_text = (
             f"\n\n**Risk Management**\n"
             f"• SL: {sl_price:.5f}\n"
@@ -203,30 +197,29 @@ def generate_signal(df, pair_name):
     else:
         risk_text = "\n\n**Risk Management**\n• No clear SL/TP suggested in HOLD condition."
 
-    # Support / Resistance text
+    # SR text
     sr_text = (
         f"\n\n**Support / Resistance**\n"
         f"• Support: {support:.5f}\n"
         f"• Resistance: {resistance:.5f}"
     )
 
-    # Dono ko ek sath jodna
     full_extra = risk_text + sr_text
 
-    # ---------- Final message per signal ----------
-    if signal_type == "STRONG BUY":
+    # Final message
+    if strength == "STRONG BUY":
         message = (
             f"📈 {pair_name} - STRONG BUY\n"
             f"• Price: {close_price:.5f}\n"
-            f"• Above MA20: {ma20:.5f}\n"
+            f"• MA20: {ma20:.5f}\n"
             f"• Candle: Bullish\n"
             f"{full_extra}"
         )
-    elif signal_type == "STRONG SELL":
+    elif strength == "STRONG SELL":
         message = (
             f"📉 {pair_name} - STRONG SELL\n"
             f"• Price: {close_price:.5f}\n"
-            f"• Below MA20: {ma20:.5f}\n"
+            f"• MA20: {ma20:.5f}\n"
             f"• Candle: Bearish\n"
             f"{full_extra}"
         )
@@ -234,12 +227,14 @@ def generate_signal(df, pair_name):
         message = (
             f"⚖ {pair_name} - HOLD\n"
             f"• Price: {close_price:.5f}\n"
-            f"• Near MA20: {ma20:.5f}\n"
+            f"• MA20: {ma20:.5f}\n"
             f"• Market in range.\n"
             f"{full_extra}"
         )
 
-    return message
+    # IMPORTANT: do values return karo
+    return message, strength
+
 
 # ================= Commands =================
 
@@ -329,7 +324,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Chart + Signal
     await query.edit_message_text("Generating chart & signal...")
     df = get_historical_data(base, quote)
-    signal_text, _ = generate_signal(df, pair_name)
+    signal_text = generate_signal(df, pair_name)
     chart = generate_chart(df, pair_name)
 
     if chart:
@@ -355,7 +350,8 @@ async def auto_alert(context: ContextTypes.DEFAULT_TYPE):
         if df.empty:
             continue
 
-        text, strength = generate_signal(df, pair_name)
+        text = generate_signal(df, pair_name)
+        strength = "NONE"   # ya jo bhi tum default rakhna chaho
         if abs(strength) >= 3:
             chart = generate_chart(df, pair_name)
             caption = f"🔔 **STRONG ALERT**\n\n{text}"
@@ -386,4 +382,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
