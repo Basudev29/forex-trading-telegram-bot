@@ -5,3 +5,4 @@ pandas_ta
 matplotlib
 nest_asyncio
 scipy
+mplfinance
