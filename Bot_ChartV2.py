@@ -20,7 +20,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 # TELEGRAM_TOKEN, YOUR_CHAT_ID
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-YOUR_CHAT_ID = int(os.getenv("YOUR_CHAT_ID", "123456"))
+YOUR_CHAT_ID = int(os.getenv("YOUR_CHAT_ID"))
 
 # Risk Settings (global default)
 user_balance = 10000.0
@@ -179,56 +179,36 @@ def generate_signal(df, pair_name):
             tp = f"{live_rate + (reward_risk_ratio * atr):.5f}"
 
     risk_text = (
-        f"
-
-**Risk Management**
-"
-        f"• Balance: ${user_balance:,.0f}
-"
-        f"• Risk %: {max_risk_percent}%
-"
-        f"• Lots: {position_size:.2f}
-"
-        f"• Stop-Loss: {sl}
-"
-        f"• Take-Profit: {tp}
-"
+        f"\n\n**Risk Management**\n"
+        f"• Balance: ${user_balance:,.0f}\n"
+        f"• Risk %: {max_risk_percent}%\n"
+        f"• Lots: {position_size:.2f}\n"
+        f"• Stop-Loss: {sl}\n"
+        f"• Take-Profit: {tp}\n"
         f"• R:R = {reward_risk_ratio}:1"
     )
 
     if strength >= 3:
         signal = (
-            f"**STRONG BUY** 📈
-"
-            + "
-".join(reasons)
-            + f"
-
-Live Rate: {live_str}"
+            f"**STRONG BUY** 📈\n"
+            + "\n".join(reasons)
+            + f"\n\nLive Rate: {live_str}"
             + risk_text
         )
     elif strength <= -3:
         signal = (
-            f"**STRONG SELL** 📉
-"
-            + "
-".join(reasons)
-            + f"
-
-Live Rate: {live_str}"
+            f"**STRONG SELL** 📉\n"
+            + "\n".join(reasons)
+            + f"\n\nLive Rate: {live_str}"
             + risk_text
         )
     else:
         signal = (
-            f"**HOLD** ⚖️
-"
-            f"Strength: {strength}
-"
+            f"**HOLD** ⚖️\n"
+            f"Strength: {strength}\n"
             f"Live Rate: {live_str}"
             + risk_text
-            + "
-
-No strong signal."
+            + "\n\nNo strong signal."
         )
 
     return signal, strength
@@ -244,16 +224,13 @@ async def set_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_balance = float(args[0])
             max_risk_percent = float(args[1])
             await update.message.reply_text(
-                f"✅ Updated!
-Balance: ${user_balance:,.0f}
-Risk: {max_risk_percent}%"
+                f"✅ Updated!\nBalance: ${user_balance:,.0f}\nRisk: {max_risk_percent}%"
             )
         except:
             await update.message.reply_text("❌ Wrong format. Use: /setrisk 10000 1")
     else:
         await update.message.reply_text(
-            "Usage: /setrisk balance risk_percent
-Example: /setrisk 10000 1"
+            "Usage: /setrisk balance risk_percent\nExample: /setrisk 10000 1"
         )
 
 
@@ -267,9 +244,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "🤖 **Forex Bot Live & Working!**
-
-"
+        "🤖 **Forex Bot Live & Working!**\n\n"
         "Chart + Signal & Risk Management ready!",
         reply_markup=reply_markup,
         parse_mode="Markdown",
@@ -319,9 +294,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if rate is not None:
                 rate = 1 / rate
         rate_str = f"{rate:.5f}" if rate else "Error"
-        msg = f"**{pair_name} Live Rate**
-
-{rate_str}"
+        msg = f"**{pair_name} Live Rate**\n\n{rate_str}"
         await query.edit_message_text(msg, parse_mode="Markdown")
         return
 
@@ -335,19 +308,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
             photo=chart,
-            caption=f"**{pair_name}**
-
-{signal_text}",
+            caption=f"**{pair_name}**\n\n{signal_text}",
             parse_mode="Markdown",
         )
         await query.delete_message()
     else:
         await query.edit_message_text(
-            f"**{pair_name}**
-
-{signal_text}
-
-Chart not available",
+            f"**{pair_name}**\n\n{signal_text}\n\nChart not available",
             parse_mode="Markdown",
         )
 
@@ -363,9 +330,7 @@ async def auto_alert(context: ContextTypes.DEFAULT_TYPE):
         text, strength = generate_signal(df, pair_name)
         if abs(strength) >= 3:
             chart = generate_chart(df, pair_name)
-            caption = f"🔔 **STRONG ALERT**
-
-{text}"
+            caption = f"🔔 **STRONG ALERT**\n\n{text}"
 
             if chart:
                 await context.bot.send_photo(
@@ -393,4 +358,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
