@@ -1,5 +1,6 @@
 import os
 import requests
+import mplfinance as mpf
 import pandas as pd
 import pandas_ta as ta
 import asyncio
@@ -91,127 +92,154 @@ def generate_chart(df, pair_name):
         return None
 
     try:
-        plt.figure(figsize=(12, 7))
-        plt.style.use('dark_background')
-
-        recent = df[-60:]
-
-        # Price
-        plt.plot(recent['date'], recent['close'], label='Price', color='cyan', linewidth=2)
-
-        # SMAs
-        sma_20 = ta.sma(df['close'], length=20)
-        sma_50 = ta.sma(df['close'], length=50)
-        plt.plot(recent['date'], sma_20[-60:], label='SMA 20', color='yellow', alpha=0.8)
-        plt.plot(recent['date'], sma_50[-60:], label='SMA 50', color='orange', alpha=0.8)
+        # Index ko datetime bana ke set karna (mplfinance requirement)
+        data = df.copy()
+        data = data[-60:]  # last 60 candles
+        data = data[['date', 'open', 'high', 'low', 'close']].set_index('date')
 
         # Simple Support / Resistance from last 60 candles
-        support = recent['low'].min()
-        resistance = recent['high'].max()
-        plt.axhline(support, color='green', linestyle='--', alpha=0.7, label='Support')
-        plt.axhline(resistance, color='red', linestyle='--', alpha=0.7, label='Resistance')
+        support = data['Low'].min() if 'Low' in data.columns else data['low'].min()
+        resistance = data['High'].max() if 'High' in data.columns else data['high'].max()
 
-        plt.title(f"{pair_name} - Last 60 Days", color='white', fontsize=16)
-        plt.xlabel('Date', color='white')
-        plt.ylabel('Price', color='white')
-        plt.legend()
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
+        # Columns ko mplfinance ke standard naam par rename karo
+        data.columns = ['Open', 'High', 'Low', 'Close']
+
+        # Figure + Axes create karo
+        fig, ax = plt.subplots(figsize=(12, 7))
+        plt.style.use('dark_background')
+
+        # Candlestick plot
+        mpf.plot(
+            data,
+            type='candle',
+            ax=ax,
+            style='charles',
+            show_nontrading=False
+        )
+
+        # Support / Resistance lines overlay
+        ax.axhline(support, color='green', linestyle='--', alpha=0.7, label=f'Support: {support:.5f}')
+        ax.axhline(resistance, color='red', linestyle='--', alpha=0.7, label=f'Resistance: {resistance:.5f}')
+
+        # Title & labels
+        ax.set_title(f"{pair_name} - Last 60 Candles", color='white', fontsize=16)
+        ax.set_xlabel('Date', color='white')
+        ax.set_ylabel('Price', color='white')
+
+        ax.legend()
+        ax.grid(alpha=0.3)
+        fig.autofmt_xdate()
 
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=150, facecolor='black')
         buf.seek(0)
-        plt.close()
+        plt.close(fig)
 
         return buf
-    except:
+    except Exception as e:
+        print("Chart error:", e)
         return None
 
 # ================= Signal (with SL/TP always) =================
 
 def generate_signal(df, pair_name):
-    if df.empty or len(df) < 50:
-        return "Not enough data 😕", 0
+    # Data check
+    if df is None or df.empty or len(df) < 60:
+        return f"{pair_name}: Data not enough for analysis."
 
-    df['sma_20'] = ta.sma(df['close'], length=20)
-    df['sma_50'] = ta.sma(df['close'], length=50)
-    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-
+    # Last candle / basic values
     last = df.iloc[-1]
-    prev = df.iloc[-2]
+    close_price = last['close']
+    open_price = last['open']
+    high_price = last['high']
+    low_price = last['low']
 
-    strength = 0
-    reasons = []
+    # Example indicators (agar tum indicators already calculate kar rahe ho,
+    # to unka code yahan use karo)
+    # Yahan ek simple moving average ka example:
+    df['ma20'] = df['close'].rolling(window=20).mean()
+    ma20 = df['ma20'].iloc[-1]
 
-    # SMA cross logic
-    if last['sma_20'] > last['sma_50'] and prev['sma_20'] <= prev['sma_50']:
-        reasons.append("🟢 Golden Cross")
-        strength += 3
-    elif last['sma_20'] < last['sma_50'] and prev['sma_20'] >= prev['sma_50']:
-        reasons.append("🔴 Death Cross")
-        strength -= 3
+    # Price action ke basis par dummy signal (tum apni logic rakh sakte ho)
+    signal_type = "HOLD"
+    if close_price > ma20 and close_price > open_price:
+        signal_type = "STRONG BUY"
+    elif close_price < ma20 and close_price < open_price:
+        signal_type = "STRONG SELL"
 
-    # Live rate
-    base, quote = PAIRS[pair_name]
-    live_rate = get_live_rate(base, quote)
-    if live_rate is None:
-        live_rate = get_live_rate(quote, base)
-        if live_rate is not None:
-            live_rate = 1 / live_rate
-    live_str = f"{live_rate:.5f}" if live_rate else "N/A"
+    # SL / TP example (simple percentage logic, tum apni strategy use karo)
+    if signal_type == "STRONG BUY":
+        sl_price = low_price * 0.995
+        tp_price = close_price * 1.010
+    elif signal_type == "STRONG SELL":
+        sl_price = high_price * 1.005
+        tp_price = close_price * 0.990
+    else:
+        sl_price = None
+        tp_price = None
 
-    # ATR & risk
-    atr = last['atr'] if pd.notna(last['atr']) else 0.001
-    risk_amount = user_balance * (max_risk_percent / 100)
-    position_size = risk_amount / (atr * 10000) if atr > 0 else 0.01
+    # Risk/Reward ratio example
+    if sl_price and tp_price:
+        risk = abs(close_price - sl_price)
+        reward = abs(tp_price - close_price)
+        rr_ratio = reward / risk if risk != 0 else 0
+    else:
+        rr_ratio = None
 
-    sl = tp = "N/A"
-    if live_rate:
-        if strength > 0:
-            sl = f"{live_rate - atr:.5f}"
-            tp = f"{live_rate + (reward_risk_ratio * atr):.5f}"
-        elif strength < 0:
-            sl = f"{live_rate + atr:.5f}"
-            tp = f"{live_rate - (reward_risk_ratio * atr):.5f}"
-        else:
-            # HOLD ke case me bhi neutral SL/TP (assume buy side)
-            sl = f"{live_rate - atr:.5f}"
-            tp = f"{live_rate + (reward_risk_ratio * atr):.5f}"
+    # ---------- Support / Resistance calculation ----------
+    recent = df[-60:]  # last 60 candles
+    support = recent['low'].min()
+    resistance = recent['high'].max()
 
-    risk_text = (
-        f"\n\n**Risk Management**\n"
-        f"• Balance: ${user_balance:,.0f}\n"
-        f"• Risk %: {max_risk_percent}%\n"
-        f"• Lots: {position_size:.2f}\n"
-        f"• Stop-Loss: {sl}\n"
-        f"• Take-Profit: {tp}\n"
-        f"• R:R = {reward_risk_ratio}:1"
-    )
-
-    if strength >= 3:
-        signal = (
-            f"**STRONG BUY** 📈\n"
-            + "\n".join(reasons)
-            + f"\n\nLive Rate: {live_str}"
-            + risk_text
-        )
-    elif strength <= -3:
-        signal = (
-            f"**STRONG SELL** 📉\n"
-            + "\n".join(reasons)
-            + f"\n\nLive Rate: {live_str}"
-            + risk_text
+    # ---------- Text blocks ready ----------
+    # Risk text
+    if sl_price and tp_price and rr_ratio is not None:
+        risk_text = (
+            f"\n\n**Risk Management**\n"
+            f"• SL: {sl_price:.5f}\n"
+            f"• TP: {tp_price:.5f}\n"
+            f"• RR: {rr_ratio:.2f}"
         )
     else:
-        signal = (
-            f"**HOLD** ⚖️\n"
-            f"Strength: {strength}\n"
-            f"Live Rate: {live_str}"
-            + risk_text
-            + "\n\nNo strong signal."
+        risk_text = "\n\n**Risk Management**\n• No clear SL/TP suggested in HOLD condition."
+
+    # Support / Resistance text
+    sr_text = (
+        f"\n\n**Support / Resistance**\n"
+        f"• Support: {support:.5f}\n"
+        f"• Resistance: {resistance:.5f}"
+    )
+
+    # Dono ko ek sath jodna
+    full_extra = risk_text + sr_text
+
+    # ---------- Final message per signal ----------
+    if signal_type == "STRONG BUY":
+        message = (
+            f"📈 {pair_name} - STRONG BUY\n"
+            f"• Price: {close_price:.5f}\n"
+            f"• Above MA20: {ma20:.5f}\n"
+            f"• Candle: Bullish\n"
+            f"{full_extra}"
+        )
+    elif signal_type == "STRONG SELL":
+        message = (
+            f"📉 {pair_name} - STRONG SELL\n"
+            f"• Price: {close_price:.5f}\n"
+            f"• Below MA20: {ma20:.5f}\n"
+            f"• Candle: Bearish\n"
+            f"{full_extra}"
+        )
+    else:
+        message = (
+            f"⚖ {pair_name} - HOLD\n"
+            f"• Price: {close_price:.5f}\n"
+            f"• Near MA20: {ma20:.5f}\n"
+            f"• Market in range.\n"
+            f"{full_extra}"
         )
 
-    return signal, strength
+    return message
 
 # ================= Commands =================
 
@@ -358,3 +386,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
