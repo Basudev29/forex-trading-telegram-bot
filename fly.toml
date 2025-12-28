@@ -1,0 +1,14 @@
+app = "forex-bot-basudev"  # Ye change kar do, unique naam rakho jaise forex-bot-rahul
+
+[build]
+
+[env]
+  PORT = "8080"
+
+[processes]
+  bot = "python Bot_ChartV2.py"
+
+[[vm]]
+  memory = "512mb"
+  cpus = 1
+  cpu_kind = "shared"
