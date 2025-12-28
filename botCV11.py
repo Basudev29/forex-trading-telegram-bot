@@ -2,12 +2,11 @@ import os
 import requests
 import mplfinance as mpf
 import pandas as pd
-import pandas_ta as ta
 import asyncio
 import nest_asyncio
 from datetime import datetime, timedelta
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg')  # Cloud ke liye zaroori
 import matplotlib.pyplot as plt
 import io
 
@@ -16,18 +15,24 @@ nest_asyncio.apply()
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ===== ENV VARIABLES =====
-TELEGRAM_TOKEN = "8377055187:AAGinbhefXUOk9vj2miXAcfI1B-1_Hgr-cw"
-YOUR_CHAT_ID = "966554382945"  # Ek ID ya comma se multiple, jaise "12345,67890"
+# ===== ENV VARIABLES (Fly.io ke secrets se lenge) =====
+# ===== ENV VARIABLES (Fly.io ke secrets se lenge) =====
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+YOUR_CHAT_ID_STR = os.getenv("YOUR_CHAT_ID")  # String me milega, jaise "12345" ya "12345,67890"
 
 if not TELEGRAM_TOKEN:
-    print("ERROR: TELEGRAM_TOKEN not set!")
+    print("ERROR: TELEGRAM_TOKEN not set in secrets!")
     exit()
+
+# Chat IDs ko list mein convert karo
+def get_chat_ids():
+    if not YOUR_CHAT_ID_STR:
+        return []
+    return [int(cid.strip()) for cid in YOUR_CHAT_ID_STR.split(",") if cid.strip().isdigit()]
 
 # Risk Settings
 user_balance = 10000.0
 max_risk_percent = 1.0
-reward_risk_ratio = 2
 
 # Pairs
 PAIRS = {
@@ -41,17 +46,13 @@ PAIRS = {
 }
 
 # ================= API Functions =================
-
 def get_live_rate(base_curr, quote_curr):
     url = f"https://api.frankfurter.app/latest?from={base_curr}&to={quote_curr}"
     try:
         data = requests.get(url).json()
-        if 'rates' in data:
-            return data['rates'][quote_curr]
-        return None
+        return data.get('rates', {}).get(quote_curr)
     except:
         return None
-
 
 def get_historical_data(base_curr, quote_curr, days=365):
     end_date = datetime.now().strftime('%Y-%m-%d')
@@ -76,77 +77,52 @@ def get_historical_data(base_curr, quote_curr, days=365):
         df = df.sort_values('date').reset_index(drop=True)
         df['close'] = df['close'].astype(float)
 
-        # OHLC approx
         df['open'] = df['close'].shift(1)
         df['high'] = df['close'].rolling(window=5).max()
         df['low'] = df['close'].rolling(window=5).min()
         df = df.dropna().reset_index(drop=True)
-
         return df
-    except:
+    except Exception as e:
+        print("Historical data error:", e)
         return pd.DataFrame()
 
-# ================= Chart (with Support/Resistance) =================
-
+# ================= Chart =================
 def generate_chart(df, pair_name):
     if df.empty or len(df) < 20:
         return None
-
     try:
-        # Index ko datetime bana ke set karna (mplfinance requirement)
-        data = df.copy()
-        data = data[-60:]  # last 60 candles
+        data = df.copy()[-60:]
         data = data[['date', 'open', 'high', 'low', 'close']].set_index('date')
-
-        # Simple Support / Resistance from last 60 candles
-        support = data['Low'].min() if 'Low' in data.columns else data['low'].min()
-        resistance = data['High'].max() if 'High' in data.columns else data['high'].max()
-
-        # Columns ko mplfinance ke standard naam par rename karo
         data.columns = ['Open', 'High', 'Low', 'Close']
 
-        # Figure + Axes create karo
         fig, ax = plt.subplots(figsize=(12, 7))
         plt.style.use('dark_background')
 
-        # Candlestick plot
-        mpf.plot(
-            data,
-            type='candle',
-            ax=ax,
-            style='charles',
-            show_nontrading=False
-        )
+        mpf.plot(data, type='candle', ax=ax, style='charles', show_nontrading=False)
 
-        # Support / Resistance lines overlay
+        support = data['Low'].min()
+        resistance = data['High'].max()
         ax.axhline(support, color='green', linestyle='--', alpha=0.7, label=f'Support: {support:.5f}')
         ax.axhline(resistance, color='red', linestyle='--', alpha=0.7, label=f'Resistance: {resistance:.5f}')
 
-        # Title & labels
-        ax.set_title(f"{pair_name} - Last 60 Candles", color='white', fontsize=16)
-        ax.set_xlabel('Date', color='white')
-        ax.set_ylabel('Price', color='white')
-
+        ax.set_title(f"{pair_name} - Last 60 Days", color='white', fontsize=16)
         ax.legend()
         ax.grid(alpha=0.3)
         fig.autofmt_xdate()
 
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, facecolor='black')
+        plt.savefig(buf, format='png', dpi=150, facecolor='black', bbox_inches='tight')
         buf.seek(0)
         plt.close(fig)
-
         return buf
     except Exception as e:
         print("Chart error:", e)
         return None
 
-# ================= Signal (with SL/TP always) =================
-
+# ================= Signal =================
 def generate_signal(df, pair_name):
-    # Data check
-    if df is None or df.empty or len(df) < 60:
-        return f"{pair_name}: Data not enough for analysis.", "NONE"
+    if df.empty or len(df) < 60:
+        return f"{pair_name}: Not enough data.", "HOLD"
 
     last = df.iloc[-1]
     close_price = last['close']
@@ -154,20 +130,17 @@ def generate_signal(df, pair_name):
     high_price = last['high']
     low_price = last['low']
 
-    # Simple MA20 example (agar already df['ma20'] hai to ye mat lagana)
-    df['ma20'] = df['close'].rolling(window=20).mean()
+    df['ma20'] = df['close'].rolling(20).mean()
     ma20 = df['ma20'].iloc[-1]
 
-    # Signal type
     strength = "HOLD"
     if close_price > ma20 and close_price > open_price:
         strength = "STRONG BUY"
     elif close_price < ma20 and close_price < open_price:
         strength = "STRONG SELL"
 
-    # SL / TP
-    sl_price = None
-    tp_price = None
+    # SL/TP
+    sl_price = tp_price = rr_ratio = None
     if strength == "STRONG BUY":
         sl_price = low_price * 0.995
         tp_price = close_price * 1.010
@@ -175,223 +148,121 @@ def generate_signal(df, pair_name):
         sl_price = high_price * 1.005
         tp_price = close_price * 0.990
 
-    # RR
-    rr_ratio = None
-    if sl_price is not None and tp_price is not None:
+    if sl_price and tp_price:
         risk = abs(close_price - sl_price)
         reward = abs(tp_price - close_price)
-        rr_ratio = reward / risk if risk != 0 else 0
+        rr_ratio = round(reward / risk, 2) if risk != 0 else 0
 
-    # ----- Support / Resistance -----
     recent = df[-60:]
     support = recent['low'].min()
     resistance = recent['high'].max()
 
-    # Risk text
-    if sl_price is not None and tp_price is not None and rr_ratio is not None:
-        risk_text = (
-            f"\n\n**Risk Management**\n"
-            f"• SL: {sl_price:.5f}\n"
-            f"• TP: {tp_price:.5f}\n"
-            f"• RR: {rr_ratio:.2f}"
-        )
-    else:
-        risk_text = "\n\n**Risk Management**\n• No clear SL/TP suggested in HOLD condition."
+    risk_text = f"\n\n**Risk Management**\n• SL: {sl_price:.5f}\n• TP: {tp_price:.5f}\n• RR: {rr_ratio}" if sl_price else "\n\n**Risk Management**\n• No clear signal."
+    sr_text = f"\n\n**Support / Resistance**\n• Support: {support:.5f}\n• Resistance: {resistance:.5f}"
 
-    # SR text
-    sr_text = (
-        f"\n\n**Support / Resistance**\n"
-        f"• Support: {support:.5f}\n"
-        f"• Resistance: {resistance:.5f}"
-    )
-
-    full_extra = risk_text + sr_text
-
-    # Final message
     if strength == "STRONG BUY":
-        message = (
-            f"📈 {pair_name} - STRONG BUY\n"
-            f"• Price: {close_price:.5f}\n"
-            f"• MA20: {ma20:.5f}\n"
-            f"• Candle: Bullish\n"
-            f"{full_extra}"
-        )
+        message = f"📈 {pair_name} - STRONG BUY\n• Price: {close_price:.5f}\n• MA20: {ma20:.5f}\n• Bullish Candle{risk_text}{sr_text}"
     elif strength == "STRONG SELL":
-        message = (
-            f"📉 {pair_name} - STRONG SELL\n"
-            f"• Price: {close_price:.5f}\n"
-            f"• MA20: {ma20:.5f}\n"
-            f"• Candle: Bearish\n"
-            f"{full_extra}"
-        )
+        message = f"📉 {pair_name} - STRONG SELL\n• Price: {close_price:.5f}\n• MA20: {ma20:.5f}\n• Bearish Candle{risk_text}{sr_text}"
     else:
-        message = (
-            f"⚖ {pair_name} - HOLD\n"
-            f"• Price: {close_price:.5f}\n"
-            f"• MA20: {ma20:.5f}\n"
-            f"• Market in range.\n"
-            f"{full_extra}"
-        )
+        message = f"⚖ {pair_name} - HOLD\n• Price: {close_price:.5f}\n• MA20: {ma20:.5f}\n• Range market{risk_text}{sr_text}"
 
-    # IMPORTANT: do values return karo
     return message, strength
 
-
 # ================= Commands =================
-
-async def auto_alert(context: ContextTypes.DEFAULT_TYPE):
-    chat_ids = [int(cid.strip()) for cid in YOUR_CHAT_ID.split(",")] if YOUR_CHAT_ID else []
-    for pair_name in PAIRS:
-        # ... baaki code
-        if strength in ["STRONG BUY", "STRONG SELL"]:  # Ya jo condition chaho
-            for chat_id in chat_ids:
-                if chart:
-                    await context.bot.send_photo(chat_id, chart, caption=caption, parse_mode="Markdown")
-                else:
-                    await context.bot.send_message(chat_id, text=caption, parse_mode="Markdown")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton("💱 Live Rates", callback_data="live_menu"),
+                 InlineKeyboardButton("📊 Chart + Signal", callback_data="chart_menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("🤖 **Forex Bot Live!**\nChart, Signal & Alerts ready!", reply_markup=reply_markup, parse_mode="Markdown")
 
 async def set_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global user_balance, max_risk_percent
     args = context.args
-
     if len(args) == 2:
         try:
+            global user_balance, max_risk_percent
             user_balance = float(args[0])
             max_risk_percent = float(args[1])
-            await update.message.reply_text(
-                f"✅ Updated!\nBalance: ${user_balance:,.0f}\nRisk: {max_risk_percent}%"
-            )
+            await update.message.reply_text(f"✅ Updated!\nBalance: ${user_balance:,.0f}\nRisk: {max_risk_percent}%")
         except:
             await update.message.reply_text("❌ Wrong format. Use: /setrisk 10000 1")
     else:
-        await update.message.reply_text(
-            "Usage: /setrisk balance risk_percent\nExample: /setrisk 10000 1"
-        )
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [
-            InlineKeyboardButton("💱 Live Rates", callback_data="live_menu"),
-            InlineKeyboardButton("📊 Chart + Signal", callback_data="chart_menu"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(
-        "🤖 **Forex Bot Live & Working!**\n\n"
-        "Chart + Signal & Risk Management ready!",
-        reply_markup=reply_markup,
-        parse_mode="Markdown",
-    )
+        await update.message.reply_text("Usage: /setrisk balance risk_percent\nExample: /setrisk 10000 1")
 
 # ================= Button Handler =================
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    # Menu selection
     if data.endswith("_menu"):
-        keyboard = []
-        for name in PAIRS.keys():
-            keyboard.append(
-                [InlineKeyboardButton(name, callback_data=f"{data[:-5]}_{name}")]
-            )
+        keyboard = [[InlineKeyboardButton(name, callback_data=f"{data[:-5]}_{name}")] for name in PAIRS]
         keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main")])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Select Pair:", reply_markup=reply_markup)
+        await query.edit_message_text("Select Pair:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    # Back to main
     if data == "main":
-        keyboard = [
-            [
-                InlineKeyboardButton("💱 Live Rates", callback_data="live_menu"),
-                InlineKeyboardButton("📊 Chart + Signal", callback_data="chart_menu"),
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Main Menu", reply_markup=reply_markup)
+        keyboard = [[InlineKeyboardButton("💱 Live Rates", callback_data="live_menu"),
+                     InlineKeyboardButton("📊 Chart + Signal", callback_data="chart_menu")]]
+        await query.edit_message_text("Main Menu", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    action = data.split("_")[0]
-    pair_name = data.split("_", 1)[1]
+    action, pair_name = data.split("_", 1)
     base, quote = PAIRS[pair_name]
 
-    # Live rate
     if action == "live":
-        rate = get_live_rate(base, quote)
-        if rate is None:
-            rate = get_live_rate(quote, base)
-            if rate is not None:
-                rate = 1 / rate
+        rate = get_live_rate(base, quote) or (1 / get_live_rate(quote, base) if get_live_rate(quote, base) else None)
         rate_str = f"{rate:.5f}" if rate else "Error"
-        msg = f"**{pair_name} Live Rate**\n\n{rate_str}"
-        await query.edit_message_text(msg, parse_mode="Markdown")
+        await query.edit_message_text(f"**{pair_name} Live Rate**\n\n{rate_str}", parse_mode="Markdown")
         return
 
     # Chart + Signal
     await query.edit_message_text("Generating chart & signal...")
     df = get_historical_data(base, quote)
-    signal_text = generate_signal(df, pair_name)
+    signal_text, strength = generate_signal(df, pair_name)
     chart = generate_chart(df, pair_name)
 
     if chart:
-        await context.bot.send_photo(
-            chat_id=query.message.chat_id,
-            photo=chart,
-            caption=f"**{pair_name}**\n\n{signal_text}",
-            parse_mode="Markdown",
-        )
+        await context.bot.send_photo(query.message.chat_id, chart, caption=f"**{pair_name}**\n\n{signal_text}", parse_mode="Markdown")
         await query.delete_message()
     else:
-        await query.edit_message_text(
-            f"**{pair_name}**\n\n{signal_text}\n\nChart not available",
-            parse_mode="Markdown",
-        )
+        await query.edit_message_text(f"**{pair_name}**\n\n{signal_text}\n\nChart not available", parse_mode="Markdown")
 
 # ================= Auto Alert =================
-
 async def auto_alert(context: ContextTypes.DEFAULT_TYPE):
+    chat_ids = get_chat_ids()
+    if not chat_ids:
+        return
+
     for pair_name in PAIRS:
         base, quote = PAIRS[pair_name]
         df = get_historical_data(base, quote)
         if df.empty:
             continue
+        message, strength = generate_signal(df, pair_name)
+        chart = generate_chart(df, pair_name)
 
-        text = generate_signal(df, pair_name)
-        strength = "NONE"   # ya jo bhi tum default rakhna chaho
-        if abs(strength) >= 3:
-            chart = generate_chart(df, pair_name)
-            caption = f"🔔 **STRONG ALERT**\n\n{text}"
-
-            if chart:
-                await context.bot.send_photo(
-                    YOUR_CHAT_ID, chart, caption=caption, parse_mode="Markdown"
-                )
-            else:
-                await context.bot.send_message(
-                    YOUR_CHAT_ID, text=caption, parse_mode="Markdown"
-                )
+        if strength in ["STRONG BUY", "STRONG SELL"]:
+            caption = f"🔔 **STRONG SIGNAL**\n\n{message}"
+            for chat_id in chat_ids:
+                try:
+                    if chart:
+                        await context.bot.send_photo(chat_id, chart, caption=caption, parse_mode="Markdown")
+                    else:
+                        await context.bot.send_message(chat_id, caption, parse_mode="Markdown")
+                except Exception as e:
+                    print(f"Alert send error to {chat_id}: {e}")
 
 # ================= MAIN =================
-
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setrisk", set_risk))
     app.add_handler(CallbackQueryHandler(button_handler))
-
-    # 30 min auto alerts
-    app.job_queue.run_repeating(auto_alert, interval=1800, first=30)
+    app.job_queue.run_repeating(auto_alert, interval=1800, first=30)  # Every 30 min
 
     print("Forex Bot Running Successfully!")
     await app.run_polling()
 
 if __name__ == "__main__":
     asyncio.run(main())
-
