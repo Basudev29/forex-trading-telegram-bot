@@ -1,14 +1,23 @@
-app = "forex-bot-basudev"  # Ye change kar do, unique naam rakho jaise forex-bot-rahul
+# fly.toml app configuration file generated for forex-trading-telegram-bot on 2025-12-28T11:33:50Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'forex-trading-telegram-bot'
+primary_region = 'cdg'
 
 [build]
 
-[env]
-  PORT = "8080"
-
-[processes]
-  bot = "python Bot_ChartV2.py"
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
 
 [[vm]]
-  memory = "512mb"
+  memory = '1gb'
+  cpu_kind = 'shared'
   cpus = 1
-  cpu_kind = "shared"
+  memory_mb = 1024
